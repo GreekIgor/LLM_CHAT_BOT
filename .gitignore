@@ -8,3 +8,6 @@ data/etcd/
 data/minio/
 data/tatek-assistant.db
 data/uploads/
+data/hf_cache/
+data/hf_cache_host_dl/
+data/local_models/

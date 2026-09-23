@@ -1,3 +1,4 @@
+import asyncio
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -79,7 +80,12 @@ class AgentService:
             return self._response(conversation_id, "general", phrase("thanks", language))
 # определение ветви процесса на основе намерения пользователя
         intent = self._detect_intent(clean_message)
-        
+        # ключевые слова не сработали (опечатки, другая формулировка) — спрашиваем модель
+        if intent is None:
+            model_intent = await self.qwen.classify_intent(clean_message)
+            if model_intent != "none":
+                intent = model_intent
+
         if intent == "outage":
             conversation.workflow = "outage"
             return self._ask(conversation, conversation_id, "outage", phrase("outage_start", language))
@@ -93,7 +99,8 @@ class AgentService:
             return self._ask(conversation, conversation_id, "complaint", phrase("complaint_start", language))
 
         try:
-            hits = self.knowledge_base.search(clean_message)
+            # search выполняет CPU-bound embedding и не должен блокировать event loop
+            hits = await asyncio.to_thread(self.knowledge_base.search, clean_message)
         except Exception:
             return self._response(conversation_id, "general", phrase("knowledge_base_error", language))
         if not hits:

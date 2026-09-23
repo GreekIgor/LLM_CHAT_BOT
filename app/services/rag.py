@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,7 +81,18 @@ class KnowledgeBase:
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         if self._embedding_model is None:
-            self._embedding_model = SentenceTransformer("intfloat/multilingual-e5-small")
+            # A pre-downloaded local copy skips Hugging Face entirely (useful on
+            # slow/unstable connections); fall back to the Hub-managed cache otherwise.
+            local_path = "/app/data/local_models/multilingual-e5-small"
+            if os.path.isdir(local_path):
+                self._embedding_model = SentenceTransformer(local_path)
+            else:
+                try:
+                    self._embedding_model = SentenceTransformer(
+                        "intfloat/multilingual-e5-small", local_files_only=True
+                    )
+                except OSError:
+                    self._embedding_model = SentenceTransformer("intfloat/multilingual-e5-small")
         return self._embedding_model.encode(texts, normalize_embeddings=True).tolist()
 
     @staticmethod

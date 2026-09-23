@@ -82,6 +82,46 @@ class QwenClient:
         verdict = (response.choices[0].message.content or "").strip().lower()
         return not verdict.startswith(("нет", "no"))
 
+# определение намерения пользователя моделью, когда ключевые слова не сработали
+    # message: сообщение пользователя
+    # возвращает одно из: outage, technical_conditions, complaint, none
+    async def classify_intent(self, message: str) -> str:
+        """Classify the user's intent when keyword matching found nothing (typos, rephrasing)."""
+        if not self.configured:
+            return "none"
+
+        system = (
+            "Ты классификатор намерений в чат-боте энергетической компании ТАТЭК. "
+            "Определи намерение пользователя по одной из категорий:\n"
+            "outage — жалоба на отсутствие света / отключение электроэнергии;\n"
+            "technical_conditions — запрос на подключение к сетям / технические условия;\n"
+            "complaint — жалоба или обращение, не связанное напрямую с отсутствием света;\n"
+            "none — обычный вопрос или что-то другое, не подходящее под первые три категории.\n"
+            "Ответь ровно одним словом из списка: outage, technical_conditions, complaint, none."
+        )
+        user = f"Сообщение пользователя: {message}"
+        try:
+            response = await self._get_client().chat.completions.create(
+                model=self.settings.resolved_llm_model,
+                temperature=0.0,
+                max_tokens=5,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+        except Exception:
+            return "none"
+
+        verdict = (response.choices[0].message.content or "").strip().lower()
+        if verdict.startswith("outage"):
+            return "outage"
+        if verdict.startswith("technical_conditions"):
+            return "technical_conditions"
+        if verdict.startswith("complaint"):
+            return "complaint"
+        return "none"
+
     def _get_client(self) -> AsyncOpenAI:
         if self._client is None:
             self._client = AsyncOpenAI(
