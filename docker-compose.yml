@@ -1,0 +1,82 @@
+services:
+  api:
+    build: .
+    env_file: ${ENV_FILE:-.env}
+    ports:
+      - "8080:8080"
+    environment:
+      MILVUS_URI: http://milvus:19530
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      milvus:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    command: etcd -advertise-client-urls=http://0.0.0.0:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - ./data/etcd:/etcd
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: minio server /minio_data
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - ./data/minio:/minio_data
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.5.10
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - ./data/milvus:/var/lib/milvus
+    depends_on:
+      - etcd
+      - minio
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:3b}
+    depends_on:
+      - ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      until ollama list >/dev/null 2>&1; do sleep 2; done;
+      ollama pull "$${LLM_MODEL}"
+    restart: "no"
+
+volumes:
+  ollama:
