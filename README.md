@@ -1,34 +1,108 @@
 # ТАТЭК ИИ Ассистент
 
+## Как запустить на Runpod
+
+Всё уже установлено: модель лежит на постоянном диске Pod, нужно только включить Pod, запустить модель и веб-чат.
+
+1. **Включите Pod.** Откройте [Runpod Console → Pods](https://www.runpod.io/console/pods), у своего Pod (его ID указан в `RUNPOD_POD_ID` в [`.env`](.env)) нажмите **Start** и дождитесь статуса **Running**.
+
+2. **Узнайте IP и SSH-порт.** Нажмите у Pod **Connect** и найдите строку **SSH over exposed TCP**, например `ssh root@203.0.113.10 -p 40018`. Нужны IP (`POD_IP`) и число после `-p` (`SSH_PORT`). **Порт меняется после каждого Start.**
+
+3. **Запустите модель.** В PowerShell подставьте свои `SSH_PORT` и `POD_IP`:
+
+   ```powershell
+   ssh -i "$HOME\.ssh\runpod_ed25519" -p SSH_PORT root@POD_IP "bash /workspace/tatek-qwen-server/start_server.sh"
+   ```
+
+   Ответ: `Started PID ... on port 19123`.
+
+4. **Подождите 1–2 минуты** и проверьте, что модель загрузилась:
+
+   ```powershell
+   ssh -i "$HOME\.ssh\runpod_ed25519" -p SSH_PORT root@POD_IP "tail -n 3 /workspace/tatek-qwen-server/server.log"
+   ```
+
+   Модель готова, когда в логе есть строка `Uvicorn running on http://0.0.0.0:19123`.
+
+5. **Запустите веб-чат** в PowerShell в папке `D:\SOURCE\CHAT_LLM`:
+
+   ```powershell
+   docker compose up -d
+   Invoke-RestMethod http://localhost:8081/api/health
+   ```
+
+   В ответе должны быть `status: ok` и `rag_ready: true`. Если код приложения менялся, используйте `docker compose up --build -d`.
+
+6. **Откройте чат:** [http://localhost:8081](http://localhost:8081).
+
+**Чтобы выключить:** в Runpod нажмите у Pod **Stop**, а не **Terminate**: Terminate удалит диск с моделью. Веб-чат останавливается командой `docker compose stop`.
+
+Если что-то не работает, смотрите таблицу [«Если что-то не работает»](#если-что-то-не-работает).
+
+## О проекте
+
 Веб-консультант ТАТЭК для ответов по утверждённым корпоративным материалам, проверки отключений, приёма обращений и оформления заявок на технические условия. Первым каналом является веб-чат; HTTP API отделён от интерфейса, поэтому Telegram и WhatsApp можно подключать отдельными webhook-адаптерами без дублирования логики.
 
-## Быстрый путь: Runpod + веб-чат + RAG
+## Диагностика запуска
 
-Эта последовательность запускает текущую рабочую конфигурацию с обычным Runpod Pod и Qwen3-VL.
+### Проверить, что модель отвечает
 
-1. Откройте [Runpod Console](https://www.runpod.io/console/pods), выберите свой Pod, нажмите **Start** и дождитесь статуса `RUNNING`.
-2. В Pod откройте **Connect** и скопируйте текущие SSH IP/Port: после каждого остановленного Pod порт SSH может измениться. Используйте ключ `~/.ssh/runpod_ed25519`.
-3. Выполните в корне проекта команды из раздела [«Обычный Runpod Pod»](#обычный-runpod-pod), чтобы скопировать сервер Qwen на Pod, подготовить CUDA 12.8-окружение и запустить модель на порту `19123`.
-4. Откройте [`.env`](.env) и заполните значения ниже. `LLM_API_KEY` - отдельный ключ сервера модели, созданный в Pod; он не равен `RUNPOD_API_KEY`.
+Если чат возвращает ошибку, проверьте модель напрямую через прокси Runpod:
+
+```powershell
+$envVars = @{}
+Get-Content .env | Where-Object { $_ -match '^\s*([A-Z_]+)\s*=\s*(.*)$' } | ForEach-Object { $envVars[$Matches[1]] = $Matches[2].Trim() }
+Invoke-RestMethod "https://$($envVars.RUNPOD_POD_ID)-19123.proxy.runpod.net/v1/models" `
+    -Headers @{ Authorization = "Bearer $($envVars.LLM_API_KEY)" }
+```
+
+Ответ с `id: tatek-qwen` значит, что модель работает.
+
+### Если что-то не работает
+
+| Признак | Причина и что делать |
+|---|---|
+| Чат отвечает ошибкой, в логах api `openai.InternalServerError` с HTML-страницей; прокси Runpod отдаёт `502` | Модель не запущена или ещё загружается. Выполните шаг 2 и подождите 1–2 минуты. |
+| Прокси отдаёт `401` | `LLM_API_KEY` в `.env` не совпадает с ключом на Pod (`/workspace/tatek-qwen-server/.model_api_key`). Сделайте их одинаковыми и выполните `docker compose up -d --force-recreate api`. |
+| `start_server.sh` пишет `Port 19123 is already in use` | Сервер уже запущен, ничего делать не нужно. |
+| `start_server.sh` пишет `Python environment ... is missing` | Диск Pod пустой (Pod был пересоздан или Terminate). Выполните [«Первоначальную установку»](#первоначальная-установка). |
+| `ssh: Connection refused` | Pod ещё запускается или порт SSH изменился. Подождите и возьмите актуальный порт в **Connect**. |
+| Start в Runpod не проходит: нет свободных GPU | Pod с постоянным диском привязан к одной машине, а её GPU заняты. Подождите и попробуйте позже. |
+| `http://localhost:8081` не открывается, хотя `docker compose ps` показывает `Up` | Docker не пробросил порт после своего перезапуска (в колонке PORTS нет `0.0.0.0:8081->8080/tcp`). Выполните `docker compose up -d --force-recreate --no-deps api`. |
+| `rag_ready: false` | Не запущен Milvus. Проверьте `docker compose ps` и `docker compose logs milvus`. |
+
+Логи веб-чата: `docker compose logs api --tail 50`. Лог модели: `/workspace/tatek-qwen-server/server.log` на Pod.
+
+## Что должно сохраняться
+
+- `~\.ssh\runpod_ed25519` — SSH-ключ для доступа к Pod.
+- [`.env`](.env) — настройки. Для Runpod важны:
 
 ```env
 LLM_PROVIDER=runpod_pod
 LLM_MODEL=tatek-qwen
 RUNPOD_POD_ID=ID_ВАШЕГО_POD
 RUNPOD_POD_PORT=19123
-LLM_API_KEY=ОТДЕЛЬНЫЙ_КЛЮЧ_СЕРВЕРА_МОДЕЛИ
-RUNPOD_API_KEY=КЛЮЧ_УПРАВЛЕНИЯ_RUNPOD
+LLM_API_KEY=ключ_сервера_модели        # совпадает с /workspace/tatek-qwen-server/.model_api_key на Pod
+RUNPOD_API_KEY=ключ_управления_Runpod  # не передаётся в Pod
 ```
 
-5. Запустите веб-чат и RAG из Windows PowerShell в `D:\SOURCE\CHAT_LLM`:
+- Volume Disk Pod (50 GB, смонтирован в `/workspace`), на нём лежат:
+  - `/workspace/tatek-qwen-server/` — сервер модели, `start_server.sh`, ключ `.model_api_key`, лог `server.log`;
+  - `/workspace/tatek-qwen-env/` — Python-окружение (torch 2.8 + CUDA 12.8);
+  - `/workspace/hf_cache/` — веса Qwen3-VL-8B (~17 GB).
 
-```powershell
-docker compose up --build -d
-Invoke-RestMethod http://localhost:8080/api/health
-```
+  Volume оплачивается и тогда, когда Pod остановлен.
 
-6. Откройте [http://localhost:8080](http://localhost:8080). В `/api/health` должны быть `status: "ok"`, `llm_provider: "runpod_pod"`, `llm_model: "tatek-qwen"` и `rag_ready: true`.
-7. Загрузите утверждённые документы ТАТЭК в RAG по инструкции [«Загрузка первого документа в RAG»](#загрузка-первого-документа-в-rag). До этого ассистент намеренно не будет давать справочные ответы без источника.
+## Первоначальная установка
+
+Эти шаги нужны только для нового Pod или после Terminate.
+
+1. Создайте Pod из образа `runpod/pytorch` с CUDA 12.8 и **Volume Disk не меньше 50 GB, смонтированным в `/workspace`**. Без Volume Disk папка `/workspace` очищается при каждом Stop. В портах Pod объявите HTTP-порт `19123`.
+2. Скопируйте на Pod файлы сервера, установите окружение и запустите модель по разделу [«Обычный Runpod Pod»](#обычный-runpod-pod). Скопируйте также [runpod/start_server.sh](runpod/start_server.sh) в `/workspace/tatek-qwen-server/`.
+3. Создайте ключ модели и сохраните его в двух местах: в `LLM_API_KEY` в [`.env`](.env) и в `/workspace/tatek-qwen-server/.model_api_key` на Pod (`chmod 600`). Этот ключ не равен `RUNPOD_API_KEY`.
+4. Укажите в `.env` новый `RUNPOD_POD_ID` и выполните `docker compose up --build -d`.
+5. Загрузите утверждённые документы ТАТЭК в RAG по инструкции [«Загрузка первого документа в RAG»](#загрузка-первого-документа-в-rag). До этого ассистент намеренно не даёт справочных ответов без источника.
 
 ### Загрузка первого документа в RAG
 
@@ -37,7 +111,7 @@ Invoke-RestMethod http://localhost:8080/api/health
 3. Выполните в Windows PowerShell:
 
 ```powershell
-curl.exe -X POST "http://localhost:8080/api/admin/documents" `
+curl.exe -X POST "http://localhost:8081/api/admin/documents" `
     -H "X-Admin-Token: ВАШ_ADMIN_TOKEN" `
     -F "file=@C:\ПУТЬ\К\документу.pdf"
 ```
@@ -106,7 +180,7 @@ docker compose --profile ollama up --build -d
 docker compose logs -f ollama-pull
 ```
 
-4. Откройте [http://localhost:8080](http://localhost:8080). Диагностика доступна на [http://localhost:8080/api/health](http://localhost:8080/api/health).
+4. Откройте [http://localhost:8081](http://localhost:8081). Диагностика доступна на [http://localhost:8081/api/health](http://localhost:8081/api/health).
 
 После завершения загрузки модель отвечает через Ollama по внутреннему адресу `http://ollama:11434/v1`. Ключ для Ollama не требуется.
 
@@ -431,10 +505,10 @@ RUNPOD_API_KEY=ВАШ_RUNPOD_API_KEY
 Set-Location D:\SOURCE\CHAT_LLM
 docker compose up --build -d
 docker compose ps
-Invoke-RestMethod http://localhost:8080/api/health
+Invoke-RestMethod http://localhost:8081/api/health
 ```
 
-В ответе `/api/health` ожидаются `llm_provider: "runpod_pod"`, `llm_model: "tatek-qwen"` и `llm_configured: true`. Затем откройте [http://localhost:8080](http://localhost:8080).
+В ответе `/api/health` ожидаются `llm_provider: "runpod_pod"`, `llm_model: "tatek-qwen"` и `llm_configured: true`. Затем откройте [http://localhost:8081](http://localhost:8081).
 
 ### 7. Что делать при ошибках
 
@@ -455,7 +529,7 @@ Invoke-RestMethod http://localhost:8080/api/health
 Загрузите `.txt`, `.md` или текстовый `.pdf` от имени администратора:
 
 ```powershell
-curl.exe -X POST "http://localhost:8080/api/admin/documents" -H "X-Admin-Token: ваш_ADMIN_TOKEN" -F "file=@C:\docs\pravila-teh-usloviy.pdf"
+curl.exe -X POST "http://localhost:8081/api/admin/documents" -H "X-Admin-Token: ваш_ADMIN_TOKEN" -F "file=@C:\docs\pravila-teh-usloviy.pdf"
 ```
 
 Сервис применяет модель эмбеддингов `intfloat/multilingual-e5-small`; при первом запуске она будет загружена из Hugging Face. Для закрытого контура образ и веса следует заранее поместить во внутренний registry или кэш.
