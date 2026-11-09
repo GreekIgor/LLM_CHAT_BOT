@@ -6,7 +6,11 @@
 
 1. **Включите Pod.** Откройте [Runpod Console → Pods](https://www.runpod.io/console/pods), у своего Pod (его ID указан в `RUNPOD_POD_ID` в [`.env`](.env)) нажмите **Start** и дождитесь статуса **Running**.
 
-2. **Узнайте IP и SSH-порт.** Нажмите у Pod **Connect** и найдите строку **SSH over exposed TCP**, например `ssh root@203.0.113.10 -p 40018`. Нужны IP (`POD_IP`) и число после `-p` (`SSH_PORT`). **Порт меняется после каждого Start.**
+2. **Узнайте IP и SSH-порт.** Нажмите у Pod **Connect** и найдите строку **SSH over exposed TCP**, например `ssh root@203.0.113.10 -p 40018`. Нужны IP (`POD_IP`, здесь `203.0.113.10`) и число после `-p` (`SSH_PORT`, здесь `40018`). **Порт меняется после каждого Start.**
+
+   SSH-порт нужен только для команд `ssh` ниже. **В `.env` его не записывайте:** `RUNPOD_POD_PORT` — это порт модели, он всегда `19123`. Если Pod сменил ID (например, после миграции), в `.env` меняется только `RUNPOD_POD_ID`.
+
+   `POD_IP` — это IP-адрес из цифр, а не ID Pod. Команда вида `root@abc123xyz456` не сработает. Строку **SSH** вида `ssh <ID>-...@ssh.runpod.io` для этих команд тоже не используйте: она не выполняет переданную команду.
 
 3. **Запустите модель.** В PowerShell подставьте свои `SSH_PORT` и `POD_IP`:
 
@@ -63,11 +67,13 @@ Invoke-RestMethod "https://$($envVars.RUNPOD_POD_ID)-19123.proxy.runpod.net/v1/m
 | Признак | Причина и что делать |
 |---|---|
 | Чат отвечает ошибкой, в логах api `openai.InternalServerError` с HTML-страницей; прокси Runpod отдаёт `502` | Модель не запущена или ещё загружается. Выполните шаг 2 и подождите 1–2 минуты. |
+| Чат отвечает ошибкой, в логах api `openai.NotFoundError: Error code: 404`, а в `server.log` на Pod нет запросов `POST /v1/chat/completions` | В `.env` неверный `RUNPOD_POD_PORT` или `RUNPOD_POD_ID`. Должно быть `RUNPOD_POD_PORT=19123` (не SSH-порт!) и ID текущего Pod. После исправления: `docker compose up -d --force-recreate api`. |
 | Прокси отдаёт `401` | `LLM_API_KEY` в `.env` не совпадает с ключом на Pod (`/workspace/tatek-qwen-server/.model_api_key`). Сделайте их одинаковыми и выполните `docker compose up -d --force-recreate api`. |
-| `start_server.sh` пишет `Port 19123 is already in use` | Сервер уже запущен, ничего делать не нужно. |
+| `start_server.sh` пишет `Port 19123 is already in use` | Посмотрите процесс в выводе. Если это `python`/`uvicorn`, сервер уже запущен, ничего делать не нужно. Если `gotty`, порт занял **Web Terminal** Runpod (кнопка **Enable Web Terminal** в **Connect**): он тоже использует 19123. Остановите его по SSH командой `pkill gotty` и снова запустите `start_server.sh`. Web Terminal не включайте, работайте по SSH. |
 | `start_server.sh` пишет `Python environment ... is missing` | Диск Pod пустой (Pod был пересоздан или Terminate). Выполните [«Первоначальную установку»](#первоначальная-установка). |
 | `ssh: Connection refused` | Pod ещё запускается или порт SSH изменился. Подождите и возьмите актуальный порт в **Connect**. |
-| Start в Runpod не проходит: нет свободных GPU | Pod с постоянным диском привязан к одной машине, а её GPU заняты. Подождите и попробуйте позже. |
+| Start в Runpod не проходит: нет свободных GPU | Pod с постоянным диском привязан к одной машине, а её GPU заняты. Подождите или согласитесь на миграцию (см. следующую строку). |
+| Pod мигрирован: появился Pod `...-migration` с новым ID | Runpod создал Pod на другой машине и копирует туда Volume **в фоне, уже после статуса Running**: ~26 GB копируются 10–20 минут. До окончания `start_server.sh` может не найти файлы или окружение. Подождите, пока размер перестанет расти (`du -sh /workspace`), затем запустите модель. Укажите новый ID в `RUNPOD_POD_ID` в `.env` и выполните `docker compose up -d --force-recreate api`. Старый остановленный Pod удалите (**Terminate**) только после проверки, что новый работает: его диск тоже оплачивается. |
 | `http://localhost:8081` не открывается, хотя `docker compose ps` показывает `Up` | Docker не пробросил порт после своего перезапуска (в колонке PORTS нет `0.0.0.0:8081->8080/tcp`). Выполните `docker compose up -d --force-recreate --no-deps api`. |
 | `rag_ready: false` | Не запущен Milvus. Проверьте `docker compose ps` и `docker compose logs milvus`. |
 
